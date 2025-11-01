@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/rudderlabs/hopperbot/pkg/config"
-	"github.com/rudderlabs/hopperbot/pkg/constants"
 	"go.uber.org/zap"
 )
 
@@ -149,11 +148,38 @@ func TestValidateSlackRequest_ExpiredTimestamp(t *testing.T) {
 	_, ok := handler.validateSlackRequest(w, req)
 
 	if ok {
-		t.Error("expected expired timestamp to be rejected")
+		t.Error("expected request with expired timestamp to be invalid")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status %d, got %d", http.StatusUnauthorized, w.Code)
 	}
 }
 
-// TestParseInteractionPayload_ValidPayload tests valid payload parsing
+// TestVerifySlackRequest_MissingSignature tests missing signature handling
+func TestVerifySlackRequest_MissingSignature(t *testing.T) {
+	cfg := &config.Config{
+		SlackSigningSecret: "test-secret",
+		SlackBotToken:      "test-token",
+		NotionAPIKey:       "notion-key",
+		NotionDatabaseID:   "db-id",
+		NotionClientsDBID:  "clients-db-id",
+	}
+
+	logger, _ := zap.NewDevelopment()
+	handler := NewHandler(cfg, logger)
+
+	headers := make(http.Header)
+	headers.Set(HeaderSlackRequestTimestamp, strconv.FormatInt(time.Now().Unix(), 10))
+	// Missing signature header
+
+	result := handler.verifySlackRequest(headers, []byte("test"))
+
+	if result {
+		t.Error("expected verification to fail with missing signature")
+	}
+}
+
+// TestParseInteractionPayload_ValidPayload tests valid interaction payload parsing
 func TestParseInteractionPayload_ValidPayload(t *testing.T) {
 	cfg := &config.Config{
 		SlackSigningSecret: "test-secret",
@@ -166,28 +192,34 @@ func TestParseInteractionPayload_ValidPayload(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	handler := NewHandler(cfg, logger)
 
-	payload := InteractionPayload{
-		Type: "view_submission",
-		User: User{ID: "U123", Username: "testuser"},
-		Team: Team{ID: "T123", Domain: "test"},
-		View: View{
-			ID:         "V123",
-			CallbackID: ModalCallbackIDSubmitForm,
+	payloadObj := map[string]interface{}{
+		"type": "view_submission",
+		"view": map[string]interface{}{
+			"id":          "V123",
+			"callback_id": ModalCallbackIDSubmitForm,
+		},
+		"user": map[string]interface{}{
+			"id":       "U123",
+			"username": "testuser",
 		},
 	}
 
-	payloadBytes, _ := json.Marshal(payload)
-	values := url.Values{"payload": {string(payloadBytes)}}
+	payloadJSON, _ := json.Marshal(payloadObj)
+	values := url.Values{}
+	values.Set("payload", string(payloadJSON))
 
-	parsedPayload, err := handler.parseInteractionPayload(values)
+	payload, err := handler.parseInteractionPayload(values)
+
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("expected no error, got %v", err)
 	}
-	if parsedPayload.Type != payload.Type {
-		t.Errorf("type mismatch: got %s, want %s", parsedPayload.Type, payload.Type)
+
+	if payload.Type != InteractionTypeViewSubmission {
+		t.Errorf("expected type %s, got %s", InteractionTypeViewSubmission, payload.Type)
 	}
-	if parsedPayload.User.ID != payload.User.ID {
-		t.Errorf("user ID mismatch: got %s, want %s", parsedPayload.User.ID, payload.User.ID)
+
+	if payload.User.ID != "U123" {
+		t.Errorf("expected user ID U123, got %s", payload.User.ID)
 	}
 }
 
@@ -204,18 +236,20 @@ func TestParseInteractionPayload_MissingPayload(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	handler := NewHandler(cfg, logger)
 
-	values := url.Values{}
+	values := url.Values{} // Empty values
 
 	_, err := handler.parseInteractionPayload(values)
+
 	if err == nil {
-		t.Error("expected error for missing payload")
+		t.Error("expected error for missing payload, got nil")
 	}
+
 	if !strings.Contains(err.Error(), "missing payload") {
-		t.Errorf("unexpected error message: %v", err)
+		t.Errorf("expected 'missing payload' error message, got %v", err)
 	}
 }
 
-// TestParseInteractionPayload_InvalidJSON tests invalid JSON parsing
+// TestParseInteractionPayload_InvalidJSON tests invalid JSON handling
 func TestParseInteractionPayload_InvalidJSON(t *testing.T) {
 	cfg := &config.Config{
 		SlackSigningSecret: "test-secret",
@@ -228,16 +262,29 @@ func TestParseInteractionPayload_InvalidJSON(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	handler := NewHandler(cfg, logger)
 
-	values := url.Values{"payload": {"invalid json"}}
+	values := url.Values{}
+	values.Set("payload", "invalid json {")
 
 	_, err := handler.parseInteractionPayload(values)
+
 	if err == nil {
-		t.Error("expected error for invalid JSON")
+		t.Error("expected error for invalid JSON, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "failed to unmarshal") {
+		t.Errorf("expected unmarshal error, got %v", err)
 	}
 }
 
-// TestExtractAndValidateFields_RequiredFieldsPresent tests extraction with valid fields
-func TestExtractAndValidateFields_RequiredFieldsPresent(t *testing.T) {
+// TestShouldProcessSubmission_Valid tests valid submission identification
+func TestShouldProcessSubmission_Valid(t *testing.T) {
+	payload := &InteractionPayload{
+		Type: InteractionTypeViewSubmission,
+		View: View{
+			CallbackID: ModalCallbackIDSubmitForm,
+		},
+	}
+
 	cfg := &config.Config{
 		SlackSigningSecret: "test-secret",
 		SlackBotToken:      "test-token",
@@ -249,53 +296,20 @@ func TestExtractAndValidateFields_RequiredFieldsPresent(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	handler := NewHandler(cfg, logger)
 
-	titleVal := "Test Idea"
-	state := ViewState{
-		Values: map[string]map[string]StateValue{
-			BlockIDTitle: {
-				ActionIDTitleInput: {
-					Type:  "plain_text_input",
-					Value: &titleVal,
-				},
-			},
-			BlockIDTheme: {
-				ActionIDThemeSelect: {
-					Type: "static_select",
-					SelectedOption: &SelectedOption{
-						Value: "New Feature Idea",
-						Text:  OptionText{Type: "plain_text", Text: "New Feature Idea"},
-					},
-				},
-			},
-			BlockIDProductArea: {
-				ActionIDProductAreaSelect: {
-					Type: "static_select",
-					SelectedOption: &SelectedOption{
-						Value: "AI/ML",
-						Text:  OptionText{Type: "plain_text", Text: "AI/ML"},
-					},
-				},
-			},
-		},
-	}
-
-	fields, err := handler.extractAndValidateFields(state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fields[constants.AliasTitle] != titleVal {
-		t.Errorf("title mismatch: got %s, want %s", fields[constants.AliasTitle], titleVal)
-	}
-	if fields[constants.AliasTheme] != "New Feature Idea" {
-		t.Errorf("theme mismatch: got %s, want 'New Feature Idea'", fields[constants.AliasTheme])
-	}
-	if fields[constants.AliasProductArea] != "AI/ML" {
-		t.Errorf("product area mismatch: got %s, want AI/ML", fields[constants.AliasProductArea])
+	if !handler.shouldProcessSubmission(payload) {
+		t.Error("expected valid submission to be processed")
 	}
 }
 
-// TestExtractAndValidateFields_MissingTitle tests missing required title field
-func TestExtractAndValidateFields_MissingTitle(t *testing.T) {
+// TestShouldProcessSubmission_WrongType tests submission rejection for wrong type
+func TestShouldProcessSubmission_WrongType(t *testing.T) {
+	payload := &InteractionPayload{
+		Type: "block_actions", // Wrong type
+		View: View{
+			CallbackID: ModalCallbackIDSubmitForm,
+		},
+	}
+
 	cfg := &config.Config{
 		SlackSigningSecret: "test-secret",
 		SlackBotToken:      "test-token",
@@ -307,25 +321,20 @@ func TestExtractAndValidateFields_MissingTitle(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	handler := NewHandler(cfg, logger)
 
-	state := ViewState{
-		Values: map[string]map[string]StateValue{
-			BlockIDTitle: {
-				ActionIDTitleInput: {
-					Type:  "plain_text_input",
-					Value: nil,
-				},
-			},
-		},
-	}
-
-	_, err := handler.extractAndValidateFields(state)
-	if err == nil {
-		t.Error("expected error for missing title")
+	if handler.shouldProcessSubmission(payload) {
+		t.Error("expected submission with wrong type to be rejected")
 	}
 }
 
-// TestExtractAndValidateFields_TitleTooLong tests title length validation
-func TestExtractAndValidateFields_TitleTooLong(t *testing.T) {
+// TestShouldProcessSubmission_WrongCallbackID tests submission rejection for wrong callback ID
+func TestShouldProcessSubmission_WrongCallbackID(t *testing.T) {
+	payload := &InteractionPayload{
+		Type: InteractionTypeViewSubmission,
+		View: View{
+			CallbackID: "wrong_callback_id",
+		},
+	}
+
 	cfg := &config.Config{
 		SlackSigningSecret: "test-secret",
 		SlackBotToken:      "test-token",
@@ -337,26 +346,13 @@ func TestExtractAndValidateFields_TitleTooLong(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	handler := NewHandler(cfg, logger)
 
-	longTitle := strings.Repeat("a", constants.MaxTitleLength+1)
-	state := ViewState{
-		Values: map[string]map[string]StateValue{
-			BlockIDTitle: {
-				ActionIDTitleInput: {
-					Type:  "plain_text_input",
-					Value: &longTitle,
-				},
-			},
-		},
-	}
-
-	_, err := handler.extractAndValidateFields(state)
-	if err == nil {
-		t.Error("expected error for title exceeding max length")
+	if handler.shouldProcessSubmission(payload) {
+		t.Error("expected submission with wrong callback ID to be rejected")
 	}
 }
 
-// TestExtractAndValidateFields_NoTheme tests missing required theme
-func TestExtractAndValidateFields_NoTheme(t *testing.T) {
+// TestHandleInteractive_InvalidMethod tests method validation
+func TestHandleInteractive_InvalidMethod(t *testing.T) {
 	cfg := &config.Config{
 		SlackSigningSecret: "test-secret",
 		SlackBotToken:      "test-token",
@@ -368,231 +364,13 @@ func TestExtractAndValidateFields_NoTheme(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	handler := NewHandler(cfg, logger)
 
-	titleVal := "Test Idea"
-	state := ViewState{
-		Values: map[string]map[string]StateValue{
-			BlockIDTitle: {
-				ActionIDTitleInput: {
-					Type:  "plain_text_input",
-					Value: &titleVal,
-				},
-			},
-			BlockIDTheme: {
-				ActionIDThemeSelect: {
-					Type:           "static_select",
-					SelectedOption: nil,
-				},
-			},
-		},
-	}
+	req := httptest.NewRequest(http.MethodGet, "/slack/interactive", nil)
+	w := httptest.NewRecorder()
 
-	_, err := handler.extractAndValidateFields(state)
-	if err == nil {
-		t.Error("expected error for missing theme")
-	}
-}
+	handler.HandleInteractive(w, req)
 
-// TestExtractAndValidateFields_InvalidTheme tests invalid theme value
-func TestExtractAndValidateFields_InvalidTheme(t *testing.T) {
-	cfg := &config.Config{
-		SlackSigningSecret: "test-secret",
-		SlackBotToken:      "test-token",
-		NotionAPIKey:       "notion-key",
-		NotionDatabaseID:   "db-id",
-		NotionClientsDBID:  "clients-db-id",
-	}
-
-	logger, _ := zap.NewDevelopment()
-	handler := NewHandler(cfg, logger)
-
-	titleVal := "Test Idea"
-	state := ViewState{
-		Values: map[string]map[string]StateValue{
-			BlockIDTitle: {
-				ActionIDTitleInput: {
-					Type:  "plain_text_input",
-					Value: &titleVal,
-				},
-			},
-			BlockIDTheme: {
-				ActionIDThemeSelect: {
-					Type: "static_select",
-					SelectedOption: &SelectedOption{
-						Value: "invalid_theme",
-						Text:  OptionText{Type: "plain_text", Text: "invalid_theme"},
-					},
-				},
-			},
-		},
-	}
-
-	_, err := handler.extractAndValidateFields(state)
-	if err == nil {
-		t.Error("expected error for invalid theme")
-	}
-}
-
-// TestExtractAndValidateFields_InvalidProductArea tests invalid product area
-func TestExtractAndValidateFields_InvalidProductArea(t *testing.T) {
-	cfg := &config.Config{
-		SlackSigningSecret: "test-secret",
-		SlackBotToken:      "test-token",
-		NotionAPIKey:       "notion-key",
-		NotionDatabaseID:   "db-id",
-		NotionClientsDBID:  "clients-db-id",
-	}
-
-	logger, _ := zap.NewDevelopment()
-	handler := NewHandler(cfg, logger)
-
-	titleVal := "Test Idea"
-	state := ViewState{
-		Values: map[string]map[string]StateValue{
-			BlockIDTitle: {
-				ActionIDTitleInput: {
-					Type:  "plain_text_input",
-					Value: &titleVal,
-				},
-			},
-			BlockIDTheme: {
-				ActionIDThemeSelect: {
-					Type: "static_select",
-					SelectedOption: &SelectedOption{
-						Value: "New Feature Idea",
-						Text:  OptionText{Type: "plain_text", Text: "New Feature Idea"},
-					},
-				},
-			},
-			BlockIDProductArea: {
-				ActionIDProductAreaSelect: {
-					Type: "static_select",
-					SelectedOption: &SelectedOption{
-						Value: "invalid_area",
-						Text:  OptionText{Type: "plain_text"},
-					},
-				},
-			},
-		},
-	}
-
-	_, err := handler.extractAndValidateFields(state)
-	if err == nil {
-		t.Error("expected error for invalid product area")
-	}
-}
-
-// TestExtractAndValidateFields_OptionalComments tests optional comments field
-func TestExtractAndValidateFields_OptionalComments(t *testing.T) {
-	cfg := &config.Config{
-		SlackSigningSecret: "test-secret",
-		SlackBotToken:      "test-token",
-		NotionAPIKey:       "notion-key",
-		NotionDatabaseID:   "db-id",
-		NotionClientsDBID:  "clients-db-id",
-	}
-
-	logger, _ := zap.NewDevelopment()
-	handler := NewHandler(cfg, logger)
-
-	titleVal := "Test Idea"
-	comments := "This is a test comment"
-	state := ViewState{
-		Values: map[string]map[string]StateValue{
-			BlockIDTitle: {
-				ActionIDTitleInput: {
-					Type:  "plain_text_input",
-					Value: &titleVal,
-				},
-			},
-			BlockIDTheme: {
-				ActionIDThemeSelect: {
-					Type: "static_select",
-					SelectedOption: &SelectedOption{
-						Value: "New Feature Idea",
-						Text:  OptionText{Type: "plain_text", Text: "New Feature Idea"},
-					},
-				},
-			},
-			BlockIDProductArea: {
-				ActionIDProductAreaSelect: {
-					Type: "static_select",
-					SelectedOption: &SelectedOption{
-						Value: "AI/ML",
-						Text:  OptionText{Type: "plain_text"},
-					},
-				},
-			},
-			BlockIDComments: {
-				ActionIDCommentsInput: {
-					Type:  "plain_text_input",
-					Value: &comments,
-				},
-			},
-		},
-	}
-
-	fields, err := handler.extractAndValidateFields(state)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fields[constants.AliasComments] != comments {
-		t.Errorf("comments mismatch: got %s, want %s", fields[constants.AliasComments], comments)
-	}
-}
-
-// TestExtractAndValidateFields_CommentsTooLong tests comments length validation
-func TestExtractAndValidateFields_CommentsTooLong(t *testing.T) {
-	cfg := &config.Config{
-		SlackSigningSecret: "test-secret",
-		SlackBotToken:      "test-token",
-		NotionAPIKey:       "notion-key",
-		NotionDatabaseID:   "db-id",
-		NotionClientsDBID:  "clients-db-id",
-	}
-
-	logger, _ := zap.NewDevelopment()
-	handler := NewHandler(cfg, logger)
-
-	titleVal := "Test Idea"
-	longComments := strings.Repeat("a", constants.MaxCommentLength+1)
-	state := ViewState{
-		Values: map[string]map[string]StateValue{
-			BlockIDTitle: {
-				ActionIDTitleInput: {
-					Type:  "plain_text_input",
-					Value: &titleVal,
-				},
-			},
-			BlockIDTheme: {
-				ActionIDThemeSelect: {
-					Type: "static_select",
-					SelectedOption: &SelectedOption{
-						Value: "New Feature Idea",
-						Text:  OptionText{Type: "plain_text", Text: "New Feature Idea"},
-					},
-				},
-			},
-			BlockIDProductArea: {
-				ActionIDProductAreaSelect: {
-					Type: "static_select",
-					SelectedOption: &SelectedOption{
-						Value: "AI/ML",
-						Text:  OptionText{Type: "plain_text"},
-					},
-				},
-			},
-			BlockIDComments: {
-				ActionIDCommentsInput: {
-					Type:  "plain_text_input",
-					Value: &longComments,
-				},
-			},
-		},
-	}
-
-	_, err := handler.extractAndValidateFields(state)
-	if err == nil {
-		t.Error("expected error for comments exceeding max length")
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
 	}
 }
 

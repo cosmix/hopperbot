@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rudderlabs/hopperbot/pkg/constants"
@@ -38,7 +39,8 @@ import (
 // 2. validUsers: Mapping of email addresses to Notion user UUIDs
 //
 // Both caches are populated during initialization and used for validation
-// and mapping in form submissions.
+// and mapping in form submissions. Access to the caches is protected by a mutex
+// for thread safety.
 type Client struct {
 	apiKey        string
 	databaseID    string
@@ -46,6 +48,7 @@ type Client struct {
 	httpClient    *http.Client
 	customerMap   map[string]string // Cached mapping of customer name -> Notion page ID
 	validUsers    map[string]string // Cached mapping of email -> Notion user UUID
+	cacheMu       sync.RWMutex      // Protects customerMap and validUsers
 	logger        *zap.Logger
 	metrics       *metrics.Metrics
 }
@@ -94,11 +97,14 @@ func (c *Client) InitializeCustomers() error {
 		return fmt.Errorf("failed to fetch customers: %w", err)
 	}
 
+	c.cacheMu.Lock()
 	c.customerMap = customerMap
+	mapSize := len(c.customerMap)
+	c.cacheMu.Unlock()
 
 	// Update customer cache size metric
 	if c.metrics != nil {
-		c.metrics.ClientCacheSize.Set(float64(len(c.customerMap)))
+		c.metrics.ClientCacheSize.Set(float64(mapSize))
 	}
 
 	return nil
@@ -106,10 +112,12 @@ func (c *Client) InitializeCustomers() error {
 
 // GetValidCustomers returns the list of valid customer names for dropdown options
 func (c *Client) GetValidCustomers() []string {
+	c.cacheMu.RLock()
 	customerNames := make([]string, 0, len(c.customerMap))
 	for name := range c.customerMap {
 		customerNames = append(customerNames, name)
 	}
+	c.cacheMu.RUnlock()
 	return customerNames
 }
 
@@ -133,21 +141,25 @@ func (c *Client) InitializeUsers() error {
 		return fmt.Errorf("failed to fetch users: %w", err)
 	}
 
+	c.cacheMu.Lock()
 	c.validUsers = userMap
 
 	// Update user cache size metric
-	if c.metrics != nil {
-		c.metrics.UserCacheSize.Set(float64(len(c.validUsers)))
-	}
+	mapSize := len(c.validUsers)
 
 	// Log the loaded users (emails only, not UUIDs for brevity)
 	emails := make([]string, 0, len(c.validUsers))
 	for email := range c.validUsers {
 		emails = append(emails, email)
 	}
+	c.cacheMu.Unlock()
+
+	if c.metrics != nil {
+		c.metrics.UserCacheSize.Set(float64(mapSize))
+	}
 
 	c.logger.Info("initialized Notion users cache",
-		zap.Int("count", len(c.validUsers)),
+		zap.Int("count", mapSize),
 		zap.Strings("cached_emails", emails),
 	)
 
@@ -161,22 +173,29 @@ func (c *Client) InitializeUsers() error {
 func (c *Client) GetNotionUserIDByEmail(email string) (string, bool) {
 	// Normalize email to lowercase for case-insensitive lookup
 	normalizedEmail := strings.ToLower(strings.TrimSpace(email))
+	c.cacheMu.RLock()
 	userID, found := c.validUsers[normalizedEmail]
+	c.cacheMu.RUnlock()
 	return userID, found
 }
 
 // GetUserCacheSize returns the number of users in the cache.
 func (c *Client) GetUserCacheSize() int {
-	return len(c.validUsers)
+	c.cacheMu.RLock()
+	size := len(c.validUsers)
+	c.cacheMu.RUnlock()
+	return size
 }
 
 // GetCachedUserEmails returns a list of all cached email addresses (for debugging).
 // Returns emails in their normalized (lowercase) form as stored in the cache.
 func (c *Client) GetCachedUserEmails() []string {
+	c.cacheMu.RLock()
 	emails := make([]string, 0, len(c.validUsers))
 	for email := range c.validUsers {
 		emails = append(emails, email)
 	}
+	c.cacheMu.RUnlock()
 	return emails
 }
 
@@ -475,6 +494,14 @@ func buildPeopleProperty(notionUserID string) (Property, error) {
 func (c *Client) buildProperties(fields map[string]string) (map[string]Property, error) {
 	properties := make(map[string]Property)
 
+	// Create a thread-safe copy of customerMap for this request
+	c.cacheMu.RLock()
+	customerMapCopy := make(map[string]string, len(c.customerMap))
+	for k, v := range c.customerMap {
+		customerMapCopy[k] = v
+	}
+	c.cacheMu.RUnlock()
+
 	for key, value := range fields {
 		// Trim whitespace from value before checking if empty
 		trimmedValue := strings.TrimSpace(value)
@@ -523,7 +550,7 @@ func (c *Client) buildProperties(fields map[string]string) (map[string]Property,
 			// Use relation property to link to customer database pages
 			prop, err = buildRelationProperty(
 				trimmedValue,
-				c.customerMap,
+				customerMapCopy,
 				constants.MaxCustomerOrgSelections,
 				constants.FieldCustomerOrg,
 			)

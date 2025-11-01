@@ -12,7 +12,10 @@ func (c *Client) SetMetrics(m *metrics.Metrics) {
 	c.metrics = m
 	// Update customer cache size metric
 	if m != nil {
-		m.ClientCacheSize.Set(float64(len(c.customerMap)))
+		c.cacheMu.RLock()
+		size := len(c.customerMap)
+		c.cacheMu.RUnlock()
+		m.ClientCacheSize.Set(float64(size))
 	}
 }
 

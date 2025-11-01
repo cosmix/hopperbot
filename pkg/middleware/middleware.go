@@ -66,7 +66,7 @@ func WithMetrics(endpoint string, m *metrics.Metrics, handler http.HandlerFunc) 
 }
 
 // WithTimeout wraps an HTTP handler with context-based timeout
-func WithTimeout(timeout time.Duration, handler http.HandlerFunc) http.HandlerFunc {
+func WithTimeout(timeout time.Duration, logger *zap.Logger, m *metrics.Metrics, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Create context with timeout
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
@@ -75,10 +75,24 @@ func WithTimeout(timeout time.Duration, handler http.HandlerFunc) http.HandlerFu
 		// Create channel to signal handler completion
 		done := make(chan struct{})
 
-		// Run handler in goroutine
+		// Run handler in goroutine with panic protection
 		go func() {
+			defer func() {
+				// Ensure done channel is always closed, even on panic
+				close(done)
+				// Recover from any panics to prevent goroutine leaks
+				if rec := recover(); rec != nil {
+					// Log the panic - it won't be caught by WithRecovery since we're in a goroutine
+					m.PanicRecoveriesTotal.Inc()
+					logger.Error("panic recovered in timeout middleware goroutine",
+						zap.Any("panic", rec),
+						zap.String("stack", string(debug.Stack())),
+						zap.String("method", r.Method),
+						zap.String("url", r.URL.String()),
+					)
+				}
+			}()
 			handler(w, r.WithContext(ctx))
-			close(done)
 		}()
 
 		// Wait for handler to complete or timeout
@@ -91,6 +105,8 @@ func WithTimeout(timeout time.Duration, handler http.HandlerFunc) http.HandlerFu
 			if ctx.Err() == context.DeadlineExceeded {
 				http.Error(w, "Request timeout", http.StatusRequestTimeout)
 			}
+			// Wait for goroutine to finish to avoid ResponseWriter race
+			<-done
 		}
 	}
 }

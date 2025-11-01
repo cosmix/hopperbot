@@ -31,8 +31,8 @@ func TestBuildSubmissionModal(t *testing.T) {
 		t.Errorf("close text = %s, want %s", modal.Close.Text, ModalCancelText)
 	}
 
-	if len(modal.Blocks.BlockSet) != 5 {
-		t.Errorf("number of blocks = %d, want 5", len(modal.Blocks.BlockSet))
+	if len(modal.Blocks.BlockSet) != 6 {
+		t.Errorf("number of blocks = %d, want 6", len(modal.Blocks.BlockSet))
 	}
 }
 

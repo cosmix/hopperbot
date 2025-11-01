@@ -272,6 +272,7 @@ func (h *Handler) HandleInteractive(w http.ResponseWriter, r *http.Request) {
 		zap.String("user", payload.User.Username),
 	)
 
+	// Respond with success - modal will close automatically
 	h.respondSuccess(w)
 }
 
@@ -485,7 +486,7 @@ func (h *Handler) extractAndValidateFields(state ViewState) (map[string]string, 
 	return fields, nil
 }
 
-// respondSuccess sends a successful empty response to Slack
+// respondSuccess sends a successful empty response to Slack that closes the modal
 func (h *Handler) respondSuccess(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -562,8 +563,13 @@ func (h *Handler) verifySlackRequest(headers http.Header, body []byte) bool {
 
 // respondToSlack sends a response back to Slack
 func respondToSlack(w http.ResponseWriter, message string) {
+	response := map[string]string{
+		"response_type": "ephemeral",
+		"text":          message,
+	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"response_type": "ephemeral", "text": "%s"}`, strings.ReplaceAll(message, `"`, `\"`))
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 // respondWithErrors sends a view submission response with validation errors

@@ -54,6 +54,7 @@ func BuildSubmissionModal() slack.ModalViewRequest {
 		Close:      newPlainText(ModalCancelText),
 		Blocks: slack.Blocks{
 			BlockSet: []slack.Block{
+				buildInfoBlock(),
 				buildTitleBlock(),
 				buildThemeBlock(),
 				buildProductAreaBlock(),
@@ -62,6 +63,24 @@ func BuildSubmissionModal() slack.ModalViewRequest {
 			},
 		},
 	}
+}
+
+// buildInfoBlock creates an informational context block at the top of the modal.
+// This provides helpful guidance to users about what happens when they submit.
+//
+// Returns a ContextBlock with explanatory text.
+func buildInfoBlock() *slack.ContextBlock {
+	contextText := slack.NewTextBlockObject(
+		slack.MarkdownType,
+		"Submit your idea and it will be added to Notion. The form will close when submission is complete.",
+		false,
+		false,
+	)
+
+	return slack.NewContextBlock(
+		"info_block",
+		contextText,
+	)
 }
 
 // buildTitleBlock creates the "Title" form field block.
