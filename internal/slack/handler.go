@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rudderlabs/hopperbot/internal/notion"
+	"github.com/rudderlabs/hopperbot/pkg/cache"
 	"github.com/rudderlabs/hopperbot/pkg/config"
 	"github.com/rudderlabs/hopperbot/pkg/constants"
 	"github.com/rudderlabs/hopperbot/pkg/metrics"
@@ -32,6 +33,7 @@ type Handler struct {
 	slackClient  *slack.Client
 	logger       *zap.Logger
 	metrics      *metrics.Metrics
+	cacheManager *cache.Manager
 }
 
 type Config struct {
@@ -56,6 +58,11 @@ func NewHandler(cfg *config.Config, logger *zap.Logger) *Handler {
 	}
 }
 
+// SetCacheManager sets the cache manager instance for the handler
+func (h *Handler) SetCacheManager(cm *cache.Manager) {
+	h.cacheManager = cm
+}
+
 // Initialize initializes the handler by fetching required data from Notion
 func (h *Handler) Initialize() error {
 	// Fetch the list of valid customers from the Customers database
@@ -69,6 +76,16 @@ func (h *Handler) Initialize() error {
 	}
 
 	return nil
+}
+
+// InitializeCustomers refreshes the customer cache by delegating to the notion client
+func (h *Handler) InitializeCustomers() error {
+	return h.notionClient.InitializeCustomers()
+}
+
+// InitializeUsers refreshes the user cache by delegating to the notion client
+func (h *Handler) InitializeUsers() error {
+	return h.notionClient.InitializeUsers()
 }
 
 // GetCachedUserEmails returns the list of cached user emails for debugging
@@ -97,17 +114,32 @@ func (h *Handler) HandleSlashCommand(w http.ResponseWriter, r *http.Request) {
 	triggerID := req.Values.Get("trigger_id")
 	userName := req.Values.Get("user_name")
 	command := req.Values.Get("command")
+	text := strings.TrimSpace(req.Values.Get("text"))
 
 	h.logger.Info("received slash command",
 		zap.String("command", command),
+		zap.String("text", text),
 		zap.String("user", userName),
 		zap.String("trigger_id", triggerID),
 		zap.Int("trigger_id_length", len(triggerID)),
 	)
 
+	// Check if this is a refresh-cache command
+	if text == "refresh-cache" {
+		h.handleRefreshCacheCommand(w, r)
+		return
+	}
+
+	// Default behavior: open modal
+	h.handleOpenModalCommand(w, r, triggerID, command)
+}
+
+// handleOpenModalCommand handles the default /hopperbot command to open the modal
+func (h *Handler) handleOpenModalCommand(w http.ResponseWriter, r *http.Request, triggerID, command string) {
 	// Validate trigger_id
 	if triggerID == "" {
 		h.logger.Error("trigger_id is empty")
+		h.recordSlackCommand(command, "error")
 		respondToSlack(w, "Internal error: missing trigger_id")
 		return
 	}
@@ -151,13 +183,34 @@ func (h *Handler) HandleSlashCommand(w http.ResponseWriter, r *http.Request) {
 			h.logger.Error("modal that failed to open", zap.String("modal_json", string(modalJSON)))
 		}
 
+		h.recordSlackCommand(command, "error")
 		respondToSlack(w, "Failed to open submission form. Please try again.")
 		return
 	}
 
 	h.logger.Info("modal opened successfully", zap.String("view_id", viewResponse.ID))
+	h.recordSlackCommand(command, "success")
 
 	// Respond with 200 OK immediately (empty response)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleRefreshCacheCommand handles the /hopperbot refresh-cache command
+func (h *Handler) handleRefreshCacheCommand(w http.ResponseWriter, r *http.Request) {
+	h.logger.Info("refresh-cache command received")
+
+	if h.cacheManager == nil {
+		h.logger.Error("cache manager not initialized, cannot process refresh-cache command")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	h.logger.Info("manual cache refresh triggered via slash command")
+
+	// Trigger async refresh (non-blocking)
+	h.cacheManager.ManualRefresh()
+
+	// Silent response - just return 200 OK (no visible message to user)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -192,11 +245,15 @@ func (h *Handler) HandleInteractive(w http.ResponseWriter, r *http.Request) {
 		zap.String("user", payload.User.Username),
 	)
 
+	// Record interaction received
+	h.recordSlackInteraction(payload.Type, payload.View.CallbackID, "received")
+
 	if !h.shouldProcessSubmission(payload) {
 		h.logger.Info("ignoring interaction",
 			zap.String("type", payload.Type),
 			zap.String("callback_id", payload.View.CallbackID),
 		)
+		h.recordSlackInteraction(payload.Type, payload.View.CallbackID, "ignored")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -205,6 +262,8 @@ func (h *Handler) HandleInteractive(w http.ResponseWriter, r *http.Request) {
 	slackUser, err := h.slackClient.GetUserInfo(payload.User.ID)
 	if err != nil {
 		h.logger.Error("failed to fetch Slack user info", zap.Error(err), zap.String("user_id", payload.User.ID))
+		h.recordSlackInteraction(payload.Type, payload.View.CallbackID, "user_lookup_error")
+		h.recordModalSubmission("error")
 		respondWithErrors(w, map[string]string{
 			BlockIDTitle: "Failed to identify user. Please try again.",
 		})
@@ -229,6 +288,8 @@ func (h *Handler) HandleInteractive(w http.ResponseWriter, r *http.Request) {
 			zap.String("slack_username", payload.User.Username),
 			zap.Int("notion_user_cache_size", h.notionClient.GetUserCacheSize()),
 		)
+		h.recordSlackInteraction(payload.Type, payload.View.CallbackID, "user_not_found")
+		h.recordModalSubmission("error")
 		respondWithErrors(w, map[string]string{
 			BlockIDTitle: fmt.Sprintf("Your Slack email (%s) is not associated with a Notion account in this workspace. Please contact your administrator.", slackEmail),
 		})
@@ -243,6 +304,8 @@ func (h *Handler) HandleInteractive(w http.ResponseWriter, r *http.Request) {
 	fields, err := h.extractAndValidateFields(payload.View.State)
 	if err != nil {
 		h.logger.Warn("field validation failed", zap.Error(err))
+		h.recordSlackInteraction(payload.Type, payload.View.CallbackID, "validation_error")
+		h.recordModalSubmission("validation_error")
 		respondWithErrors(w, err.(fieldValidationError).errors)
 		return
 	}
@@ -262,6 +325,8 @@ func (h *Handler) HandleInteractive(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.notionClient.SubmitForm(fields); err != nil {
 		h.logger.Error("failed to submit to Notion", zap.Error(err))
+		h.recordSlackInteraction(payload.Type, payload.View.CallbackID, "notion_error")
+		h.recordModalSubmission("error")
 		respondWithErrors(w, map[string]string{
 			BlockIDTitle: fmt.Sprintf("Failed to submit: %v", err),
 		})
@@ -271,6 +336,10 @@ func (h *Handler) HandleInteractive(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("successfully submitted form to Notion",
 		zap.String("user", payload.User.Username),
 	)
+
+	// Record successful submission
+	h.recordSlackInteraction(payload.Type, payload.View.CallbackID, "success")
+	h.recordModalSubmission("success")
 
 	// Respond with success - modal will close automatically
 	h.respondSuccess(w)
@@ -320,6 +389,12 @@ func (h *Handler) HandleOptionsRequest(w http.ResponseWriter, r *http.Request) {
 	// Get all valid customers from cache and filter based on search query
 	allCustomers := h.notionClient.GetValidCustomers()
 	filteredOptions := FilterCustomerOptions(allCustomers, optionsRequest.Value, constants.MaxOptionsResults)
+
+	h.logger.Debug("responding to options request",
+		zap.String("action_id", optionsRequest.ActionID),
+		zap.String("query", optionsRequest.Value),
+		zap.Int("results_count", len(filteredOptions)),
+	)
 
 	h.respondWithOptions(w, filteredOptions)
 }
@@ -394,13 +469,16 @@ func (h *Handler) extractAndValidateFields(state ViewState) (map[string]string, 
 	title, err := state.GetValue(BlockIDTitle, ActionIDTitleInput)
 	if err != nil {
 		validationErrors[BlockIDTitle] = fmt.Sprintf("Failed to extract title: %v", err)
+		h.recordValidationError("title")
 	} else {
 		title = strings.TrimSpace(title)
 		if title == "" {
 			validationErrors[BlockIDTitle] = "Title is required"
+			h.recordValidationError("title")
 		} else if len(title) > constants.MaxTitleLength {
 			validationErrors[BlockIDTitle] = fmt.Sprintf("Title exceeds maximum length of %d characters (current: %d)",
 				constants.MaxTitleLength, len(title))
+			h.recordValidationError("title")
 		} else {
 			fields[constants.AliasTitle] = title
 		}
@@ -410,12 +488,15 @@ func (h *Handler) extractAndValidateFields(state ViewState) (map[string]string, 
 	theme, err := state.GetSelectedOption(BlockIDTheme, ActionIDThemeSelect)
 	if err != nil {
 		validationErrors[BlockIDTheme] = fmt.Sprintf("Failed to extract theme: %v", err)
+		h.recordValidationError("theme")
 	} else {
 		theme = strings.TrimSpace(theme)
 		if theme == "" {
 			validationErrors[BlockIDTheme] = "Theme is required"
+			h.recordValidationError("theme")
 		} else if !slices.Contains(constants.ValidThemeCategories, theme) {
 			validationErrors[BlockIDTheme] = fmt.Sprintf("Invalid theme selected: %s", theme)
+			h.recordValidationError("theme")
 		} else {
 			fields[constants.AliasTheme] = theme
 		}
@@ -425,12 +506,15 @@ func (h *Handler) extractAndValidateFields(state ViewState) (map[string]string, 
 	productArea, err := state.GetSelectedOption(BlockIDProductArea, ActionIDProductAreaSelect)
 	if err != nil {
 		validationErrors[BlockIDProductArea] = fmt.Sprintf("Failed to extract product area: %v", err)
+		h.recordValidationError("product_area")
 	} else {
 		productArea = strings.TrimSpace(productArea)
 		if productArea == "" {
 			validationErrors[BlockIDProductArea] = "Product area is required"
+			h.recordValidationError("product_area")
 		} else if !slices.Contains(constants.ValidProductAreas, productArea) {
 			validationErrors[BlockIDProductArea] = fmt.Sprintf("Invalid product area selected: %s", productArea)
+			h.recordValidationError("product_area")
 		} else {
 			fields[constants.AliasProductArea] = productArea
 		}
@@ -448,6 +532,7 @@ func (h *Handler) extractAndValidateFields(state ViewState) (map[string]string, 
 		comments = strings.TrimSpace(comments)
 		if comments != "" {
 			if len(comments) > constants.MaxCommentLength {
+				h.recordValidationError("comments")
 				return nil, fieldValidationError{
 					errors: map[string]string{
 						BlockIDComments: fmt.Sprintf("Comments exceed maximum length of %d characters (current: %d)",
@@ -462,6 +547,7 @@ func (h *Handler) extractAndValidateFields(state ViewState) (map[string]string, 
 	// Extract and validate customer org (multi-select, optional, max 10)
 	if orgs, err := state.GetSelectedOptions(BlockIDCustomerOrg, ActionIDCustomerOrgSelect); err == nil && len(orgs) > 0 {
 		if len(orgs) > constants.MaxCustomerOrgSelections {
+			h.recordValidationError("customer_org")
 			return nil, fieldValidationError{
 				errors: map[string]string{
 					BlockIDCustomerOrg: fmt.Sprintf("Too many customer orgs selected (max: %d, selected: %d)",
@@ -473,6 +559,7 @@ func (h *Handler) extractAndValidateFields(state ViewState) (map[string]string, 
 		validCustomers := h.notionClient.GetValidCustomers()
 		for _, org := range orgs {
 			if !slices.Contains(validCustomers, org) {
+				h.recordValidationError("customer_org")
 				return nil, fieldValidationError{
 					errors: map[string]string{
 						BlockIDCustomerOrg: fmt.Sprintf("Invalid customer org selected: %s", org),

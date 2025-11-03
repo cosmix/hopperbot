@@ -24,9 +24,29 @@
 package slack
 
 import (
+	"math/rand/v2"
+
 	"github.com/rudderlabs/hopperbot/pkg/constants"
 	"github.com/slack-go/slack"
 )
+
+// GetRandomModalTitle returns a randomly selected title from the ModalTitles array.
+// This provides variety and keeps the modal interface engaging for users.
+// Each invocation selects a different title (statistically), rotating through
+// titles relevant to feature ideas, improvements, and customer intelligence.
+//
+// Returns a string with length < 25 characters (Slack's modal title limit).
+//
+// Example:
+//
+//	title := GetRandomModalTitle()
+//	// Returns one of: "Share Your Intel", "From the Field", "Drop a Feature Idea", etc.
+func GetRandomModalTitle() string {
+	if len(ModalTitles) == 0 {
+		return "Submit Your Idea" // Fallback if array is somehow empty
+	}
+	return ModalTitles[rand.IntN(len(ModalTitles))]
+}
 
 // BuildSubmissionModal constructs the main Slack modal view for the /hopperbot command.
 // The modal includes all required and optional form fields with proper labels and placeholders.
@@ -49,7 +69,7 @@ func BuildSubmissionModal() slack.ModalViewRequest {
 	return slack.ModalViewRequest{
 		Type:       slack.VTModal,
 		CallbackID: ModalCallbackIDSubmitForm,
-		Title:      newPlainText(ModalTitle),
+		Title:      newPlainText(GetRandomModalTitle()),
 		Submit:     newPlainText(ModalSubmitText),
 		Close:      newPlainText(ModalCancelText),
 		Blocks: slack.Blocks{

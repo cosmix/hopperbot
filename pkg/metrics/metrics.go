@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -28,6 +30,12 @@ type Metrics struct {
 	ClientCacheSize       prometheus.Gauge
 	UserCacheSize         prometheus.Gauge
 	PanicRecoveriesTotal  prometheus.Counter
+
+	// Cache refresh metrics
+	CacheRefreshTotal         *prometheus.CounterVec
+	CacheRefreshDuration      *prometheus.HistogramVec
+	CacheLastRefreshTimestamp *prometheus.GaugeVec
+	CacheRefreshRetriesTotal  *prometheus.CounterVec
 }
 
 // NewMetrics creates and registers all Prometheus metrics
@@ -157,24 +165,61 @@ func NewMetrics() *Metrics {
 				Help: "Total number of panic recoveries in HTTP handlers",
 			},
 		),
+
+		// Cache refresh total operations counter
+		CacheRefreshTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "hopperbot_cache_refresh_total",
+				Help: "Total number of cache refresh operations",
+			},
+			[]string{"cache_type", "status"},
+		),
+
+		// Cache refresh duration histogram
+		CacheRefreshDuration: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "hopperbot_cache_refresh_duration_seconds",
+				Help:    "Duration of cache refresh operations in seconds",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"cache_type"},
+		),
+
+		// Cache last refresh timestamp gauge
+		CacheLastRefreshTimestamp: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "hopperbot_cache_last_refresh_timestamp",
+				Help: "Unix timestamp of the last successful cache refresh",
+			},
+			[]string{"cache_type"},
+		),
+
+		// Cache refresh retries counter
+		CacheRefreshRetriesTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "hopperbot_cache_refresh_retries_total",
+				Help: "Total number of cache refresh retry attempts",
+			},
+			[]string{"cache_type"},
+		),
 	}
 }
 
 // GetMetrics returns the singleton metrics instance
-var defaultMetrics *Metrics
+var (
+	defaultMetrics *Metrics
+	metricsOnce    sync.Once
+)
 
-// Init initializes the default metrics instance
+// Init initializes the default metrics instance in a thread-safe manner
 func Init() *Metrics {
-	if defaultMetrics == nil {
+	metricsOnce.Do(func() {
 		defaultMetrics = NewMetrics()
-	}
+	})
 	return defaultMetrics
 }
 
-// Get returns the default metrics instance
+// Get returns the default metrics instance, initializing if necessary
 func Get() *Metrics {
-	if defaultMetrics == nil {
-		return Init()
-	}
-	return defaultMetrics
+	return Init()
 }

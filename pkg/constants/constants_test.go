@@ -42,7 +42,7 @@ func TestValidProductAreasNotEmpty(t *testing.T) {
 		"Systems":           true,
 		"UX":                true,
 		"Activation Kits":   true,
-		"Activation":        true,
+		"Activation Core":   true,
 		"rETL":              true,
 		"Transformations":   true,
 		"EventStream":       true,

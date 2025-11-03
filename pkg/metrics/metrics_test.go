@@ -10,11 +10,11 @@ import (
 // Note: Due to the global prometheus registry, we can only create metrics once.
 // These tests verify the structure and functionality using a singleton approach.
 
-var metricsOnce sync.Once
+var testMetricsOnce sync.Once
 var testMetrics *Metrics
 
 func getTestMetrics() *Metrics {
-	metricsOnce.Do(func() {
+	testMetricsOnce.Do(func() {
 		testMetrics = NewMetrics()
 	})
 	return testMetrics

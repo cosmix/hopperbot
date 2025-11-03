@@ -432,6 +432,252 @@ EXPOSE 8080
 CMD ["./hopperbot"]
 ```
 
+## Observability and Monitoring
+
+Hopperbot includes production-grade observability features following modern monitoring, alerting, and debugging best practices. The implementation provides comprehensive visibility into application health, performance, and operational metrics.
+
+**Key Capabilities:**
+- Prometheus metrics for performance and business metrics
+- Health checks for liveness and readiness probes
+- Request-level instrumentation with middleware
+- Distributed system monitoring support
+- Production-ready alerting templates
+
+### Metrics Overview
+
+A complete metrics package with 16 Prometheus metrics covering all aspects of the application:
+
+#### HTTP Metrics
+- `hopperbot_http_requests_total` - Counter for all HTTP requests (labels: endpoint, method, status)
+- `hopperbot_http_request_duration_seconds` - Histogram for request latency
+- `hopperbot_http_requests_in_flight` - Gauge for concurrent requests
+- `hopperbot_http_response_size_bytes` - Histogram for response sizes
+
+#### Slack Metrics
+- `hopperbot_slack_commands_total` - Counter for slash command invocations
+- `hopperbot_slack_interactions_total` - Counter for interactive events
+- `hopperbot_slack_modal_submissions_total` - Counter for modal submissions
+
+#### Notion API Metrics
+- `hopperbot_notion_api_requests_total` - Counter for API requests (by operation)
+- `hopperbot_notion_api_request_duration_seconds` - Histogram for API latency
+- `hopperbot_notion_api_errors_total` - Counter for API errors (with error types)
+
+#### Application Metrics
+- `hopperbot_validation_errors_total` - Counter for form validation errors
+- `hopperbot_client_cache_size` - Gauge for cached client count
+- `hopperbot_user_cache_size` - Gauge for cached user count
+- `hopperbot_panic_recoveries_total` - Counter for panic recoveries
+
+### Observability Endpoints
+
+**Endpoints:**
+- `/metrics` - Prometheus metrics endpoint
+- `/health` - Liveness probe (is the server running?)
+- `/ready` - Readiness probe (can we serve traffic?)
+- `/version` - Build version and metadata
+
+**Health Check Example:**
+
+```bash
+# Liveness (is server running?)
+curl http://localhost:8080/health
+
+# Readiness (can we serve traffic?)
+curl http://localhost:8080/ready | jq
+
+# Version information
+curl http://localhost:8080/version
+```
+
+**Example Healthy Response:**
+```json
+{
+  "status": "healthy",
+  "uptime": "5m30s",
+  "timestamp": "2025-10-31T10:30:00Z",
+  "checks": [
+    {
+      "name": "notion_api",
+      "status": "healthy",
+      "message": "Notion API is reachable",
+      "duration": "145ms"
+    },
+    {
+      "name": "client_cache",
+      "status": "healthy",
+      "message": "Client cache is populated",
+      "duration": "500µs",
+      "metadata": {
+        "count": 42
+      }
+    }
+  ]
+}
+```
+
+### Prometheus Setup
+
+Create `prometheus.yml`:
+
+```yaml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Load alerting rules
+rule_files:
+  - 'prometheus-rules.yml'
+
+scrape_configs:
+  - job_name: 'hopperbot'
+    static_configs:
+      - targets: ['hopperbot:8080']
+    metrics_path: '/metrics'
+```
+
+### Kubernetes Health Probes
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 2
+```
+
+### Key Metrics to Monitor
+
+#### HTTP Performance
+```promql
+# Request rate
+rate(hopperbot_http_requests_total[5m])
+
+# Error rate
+rate(hopperbot_http_requests_total{status=~"5.."}[5m])
+
+# Latency (p95)
+histogram_quantile(0.95, rate(hopperbot_http_request_duration_seconds_bucket[5m]))
+```
+
+#### Notion API Health
+```promql
+# API request rate
+rate(hopperbot_notion_api_requests_total[5m])
+
+# API error rate
+rate(hopperbot_notion_api_errors_total[5m])
+
+# API latency (p95)
+histogram_quantile(0.95, rate(hopperbot_notion_api_request_duration_seconds_bucket[5m]))
+```
+
+#### Application Health
+```promql
+# Client cache size (should be > 0)
+hopperbot_client_cache_size
+
+# User cache size (should be > 0)
+hopperbot_user_cache_size
+
+# Validation errors
+rate(hopperbot_validation_errors_total[5m])
+
+# Panic recoveries (should be 0)
+increase(hopperbot_panic_recoveries_total[1h])
+```
+
+### Alert Rules
+
+Create `prometheus-rules.yml`:
+
+```yaml
+groups:
+  - name: hopperbot_alerts
+    interval: 30s
+    rules:
+      # Critical Alerts
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(hopperbot_http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(hopperbot_http_requests_total[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }}"
+
+      - alert: NotionAPIDown
+        expr: |
+          rate(hopperbot_notion_api_errors_total[5m]) > 0.1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notion API is experiencing errors"
+          description: "Error rate: {{ $value | humanize }} errors/sec"
+
+      - alert: EmptyClientCache
+        expr: hopperbot_client_cache_size == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Client cache is empty"
+          description: "No clients loaded from Notion database"
+
+      - alert: PanicDetected
+        expr: increase(hopperbot_panic_recoveries_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Application panic detected"
+          description: "{{ $value }} panics recovered in the last 5 minutes"
+```
+
+### Grafana Dashboard Panels
+
+**Request Rate:**
+```promql
+sum(rate(hopperbot_http_requests_total[5m])) by (endpoint)
+```
+
+**Error Rate:**
+```promql
+sum(rate(hopperbot_http_requests_total{status=~"5.."}[5m])) by (endpoint)
+/
+sum(rate(hopperbot_http_requests_total[5m])) by (endpoint)
+```
+
+**Latency Percentiles (p50, p95, p99):**
+```promql
+histogram_quantile(0.50, sum(rate(hopperbot_http_request_duration_seconds_bucket[5m])) by (le, endpoint))
+histogram_quantile(0.95, sum(rate(hopperbot_http_request_duration_seconds_bucket[5m])) by (le, endpoint))
+histogram_quantile(0.99, sum(rate(hopperbot_http_request_duration_seconds_bucket[5m])) by (le, endpoint))
+```
+
+**Cache Health:**
+```promql
+hopperbot_client_cache_size
+hopperbot_user_cache_size
+```
+
 ## Development
 
 Run tests:

@@ -25,10 +25,25 @@ const (
 
 // Modal UI text
 const (
-	ModalTitle      = "Add Idea to Hopper" // Must be < 25 chars (Slack limit)
 	ModalSubmitText = "Submit"
 	ModalCancelText = "Cancel"
 )
+
+// ModalTitles contains a list of witty titles that rotate each time the modal is opened.
+// Each title is relevant to the three types of submissions:
+// 1. New feature ideas
+// 2. Feature improvements
+// 3. Customer/market intelligence from sales or CS interactions
+// All titles must be under 25 characters due to Slack API limits.
+var ModalTitles = []string{
+	"Share Your Intel",      // Customer/market intelligence
+	"From the Field",        // Sales/CS insights from calls/events
+	"Drop a Feature Idea",   // New feature requests
+	"Heard in the Wild",     // Customer intelligence from the field
+	"Idea Drop Zone",        // General feature ideas/improvements
+	"Customer Wisdom",       // Insights from customer interactions
+	"Ship Your Insight",     // General insights/improvements
+}
 
 // Field labels
 const (

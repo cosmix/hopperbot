@@ -46,10 +46,11 @@ help:
 	@echo "  tidy           - Tidy and verify go.mod"
 	@echo ""
 	@echo "Testing targets:"
-	@echo "  test           - Run all tests"
-	@echo "  test-verbose   - Run all tests with verbose output"
-	@echo "  coverage       - Run tests with coverage report"
-	@echo "  coverage-html  - Generate HTML coverage report"
+	@echo "  test           - Run all tests (skips long-running tests)"
+	@echo "  test-verbose   - Run all tests with verbose output (skips long-running tests)"
+	@echo "  test-all       - Run ALL tests including long-running tests (5+ min)"
+	@echo "  coverage       - Run tests with coverage report (skips long-running tests)"
+	@echo "  coverage-html  - Generate HTML coverage report (skips long-running tests)"
 	@echo ""
 	@echo "Quality targets:"
 	@echo "  check          - Run fmt, vet, tidy, and test (pre-commit check)"
@@ -129,34 +130,41 @@ tidy:
 	$(GOMOD) verify
 	@echo "Tidy complete"
 
-## test: Run all tests
+## test: Run all tests (skips long-running tests)
 test:
 	@echo "Running tests..."
-	$(GOTEST) -race -timeout 30s ./...
+	$(GOTEST) -short -race -timeout 30s ./...
 	@echo "Tests complete"
 
-## test-verbose: Run all tests with verbose output
+## test-verbose: Run all tests with verbose output (skips long-running tests)
 test-verbose:
 	@echo "Running tests (verbose)..."
-	$(GOTEST) -v -race -timeout 30s ./...
+	$(GOTEST) -v -short -race -timeout 30s ./...
 
-## coverage: Run tests with coverage report
+## coverage: Run tests with coverage report (skips long-running tests)
 coverage:
 	@echo "Running tests with coverage..."
-	$(GOTEST) -race -timeout 30s -coverprofile=coverage.out -covermode=atomic ./...
+	$(GOTEST) -short -race -timeout 30s -coverprofile=coverage.out -covermode=atomic ./...
 	$(GOTEST) tool cover -func=coverage.out
 	@echo ""
 	@echo "Total coverage:"
 	@$(GOTEST) tool cover -func=coverage.out | grep total | awk '{print $$3}'
 
-## coverage-html: Generate HTML coverage report and open in browser
+## coverage-html: Generate HTML coverage report and open in browser (skips long-running tests)
 coverage-html:
 	@echo "Generating HTML coverage report..."
-	$(GOTEST) -race -timeout 30s -coverprofile=coverage.out -covermode=atomic ./...
+	$(GOTEST) -short -race -timeout 30s -coverprofile=coverage.out -covermode=atomic ./...
 	$(GOTEST) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
 	@echo "Opening in browser..."
 	@which open > /dev/null && open coverage.html || echo "Open coverage.html manually"
+
+## test-all: Run ALL tests including long-running tests (may take 5+ minutes)
+test-all:
+	@echo "Running ALL tests (including long-running tests)..."
+	@echo "Warning: This may take 5+ minutes..."
+	$(GOTEST) -race -timeout 10m ./...
+	@echo "All tests complete"
 
 ## check: Run all quality checks (pre-commit check)
 check: fmt vet tidy test

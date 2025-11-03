@@ -91,7 +91,7 @@ var ValidProductAreas = []string{
 	"Systems",
 	"UX",
 	"Activation Kits",
-	"Activation",
+	"Activation Core",
 	"rETL",
 	"Transformations",
 	"EventStream",

@@ -19,8 +19,16 @@ func TestBuildSubmissionModal(t *testing.T) {
 		t.Errorf("callback ID = %s, want %s", modal.CallbackID, ModalCallbackIDSubmitForm)
 	}
 
-	if modal.Title.Text != ModalTitle {
-		t.Errorf("title text = %s, want %s", modal.Title.Text, ModalTitle)
+	// Verify title is one of the valid rotating titles
+	titleFound := false
+	for _, validTitle := range ModalTitles {
+		if modal.Title.Text == validTitle {
+			titleFound = true
+			break
+		}
+	}
+	if !titleFound {
+		t.Errorf("title text = %s, want one of %v", modal.Title.Text, ModalTitles)
 	}
 
 	if modal.Submit.Text != ModalSubmitText {
@@ -43,6 +51,52 @@ func TestBuildSubmissionModal_MultipleInvocations(t *testing.T) {
 
 	if len(modal1.Blocks.BlockSet) != len(modal2.Blocks.BlockSet) {
 		t.Errorf("expected consistent block count, got %d and %d", len(modal1.Blocks.BlockSet), len(modal2.Blocks.BlockSet))
+	}
+}
+
+// TestGetRandomModalTitle tests that the random title function returns valid titles
+func TestGetRandomModalTitle(t *testing.T) {
+	// Run multiple times to increase confidence in randomness
+	for i := 0; i < 20; i++ {
+		title := GetRandomModalTitle()
+
+		// Verify it's one of the valid titles
+		titleFound := false
+		for _, validTitle := range ModalTitles {
+			if title == validTitle {
+				titleFound = true
+				break
+			}
+		}
+		if !titleFound {
+			t.Errorf("GetRandomModalTitle() = %s, want one of %v", title, ModalTitles)
+		}
+	}
+}
+
+// TestModalTitlesLength tests that all modal titles are under 25 characters
+func TestModalTitlesLength(t *testing.T) {
+	const maxTitleLength = 25 // Slack API limit
+
+	if len(ModalTitles) == 0 {
+		t.Fatal("ModalTitles array is empty")
+	}
+
+	for _, title := range ModalTitles {
+		if len(title) > maxTitleLength {
+			t.Errorf("title %q has length %d, exceeds Slack limit of %d characters",
+				title, len(title), maxTitleLength)
+		}
+		if len(title) == 0 {
+			t.Error("found empty title in ModalTitles array")
+		}
+	}
+}
+
+// TestModalTitlesNotEmpty tests that we have at least one title
+func TestModalTitlesNotEmpty(t *testing.T) {
+	if len(ModalTitles) == 0 {
+		t.Fatal("ModalTitles array must contain at least one title")
 	}
 }
 
