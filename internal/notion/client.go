@@ -41,16 +41,21 @@ import (
 // Both caches are populated during initialization and used for validation
 // and mapping in form submissions. Access to the caches is protected by a mutex
 // for thread safety.
+//
+// Note: With Notion API v2025-09-03, databases are containers that can have multiple
+// data sources. The client discovers and uses data source IDs for all operations.
 type Client struct {
-	apiKey        string
-	databaseID    string
-	customersDBID string
-	httpClient    *http.Client
-	customerMap   map[string]string // Cached mapping of customer name -> Notion page ID
-	validUsers    map[string]string // Cached mapping of email -> Notion user UUID
-	cacheMu       sync.RWMutex      // Protects customerMap and validUsers
-	logger        *zap.Logger
-	metrics       *metrics.Metrics
+	apiKey              string
+	databaseID          string            // Database container ID (for discovery)
+	customersDBID       string            // Customers database container ID (for discovery)
+	dataSourceID        string            // Primary data source ID for main database
+	customersDataSourceID string          // Primary data source ID for customers database
+	httpClient          *http.Client
+	customerMap         map[string]string // Cached mapping of customer name -> Notion page ID
+	validUsers          map[string]string // Cached mapping of email -> Notion user UUID
+	cacheMu             sync.RWMutex      // Protects customerMap and validUsers
+	logger              *zap.Logger
+	metrics             *metrics.Metrics
 }
 
 // NewClient creates a new Notion API client configured with authentication and database IDs.
@@ -77,10 +82,64 @@ func NewClient(apiKey, databaseID, customersDBID string, logger *zap.Logger) *Cl
 	}
 }
 
+// discoverDataSourceID fetches the data source ID for a given database container.
+//
+// With API v2025-09-03, databases are containers that can have multiple data sources.
+// This method calls GET /v1/databases/:database_id to retrieve the list of data sources
+// and returns the first one's ID.
+//
+// Parameters:
+// - databaseID: The database container ID
+// - dbName: A descriptive name for logging (e.g., "main database", "customers database")
+//
+// Returns the first data source ID, or an error if the database has no data sources.
+// Logs a warning if the database has multiple data sources.
+func (c *Client) discoverDataSourceID(databaseID, dbName string) (string, error) {
+	endpoint := fmt.Sprintf("%s/databases/%s", constants.NotionAPIBaseURL, databaseID)
+	resp, err := c.makeNotionRequest("GET", endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to get database: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var dbResponse DatabaseResponse
+	if err := json.NewDecoder(resp.Body).Decode(&dbResponse); err != nil {
+		return "", fmt.Errorf("failed to decode database response: %w", err)
+	}
+
+	if len(dbResponse.DataSources) == 0 {
+		return "", fmt.Errorf("database %s has no data sources", databaseID)
+	}
+
+	// Use the first data source
+	dataSourceID := dbResponse.DataSources[0].ID
+	dataSourceName := dbResponse.DataSources[0].Name
+
+	if len(dbResponse.DataSources) > 1 {
+		// Log warning if there are multiple data sources
+		c.logger.Warn("database has multiple data sources, using first one",
+			zap.String("database_id", databaseID),
+			zap.String("database_name", dbName),
+			zap.Int("data_source_count", len(dbResponse.DataSources)),
+			zap.String("selected_data_source_id", dataSourceID),
+			zap.String("selected_data_source_name", dataSourceName),
+		)
+	} else {
+		c.logger.Info("discovered data source for database",
+			zap.String("database_id", databaseID),
+			zap.String("database_name", dbName),
+			zap.String("data_source_id", dataSourceID),
+			zap.String("data_source_name", dataSourceName),
+		)
+	}
+
+	return dataSourceID, nil
+}
+
 // InitializeCustomers fetches the list of valid customer names and their page IDs from the Customers database.
 //
-// This method should be called during application startup before accepting requests.
-// It queries the Customers database and extracts all customer organization names and their
+// This method should be called during application startup AFTER InitializeDataSources().
+// It queries the customers data source to extract all customer organization names and their
 // corresponding Notion page IDs to populate the in-memory cache used for validation and relations.
 //
 // The method handles pagination automatically to fetch all customers regardless of database size.
@@ -106,6 +165,31 @@ func (c *Client) InitializeCustomers() error {
 	if c.metrics != nil {
 		c.metrics.ClientCacheSize.Set(float64(mapSize))
 	}
+
+	return nil
+}
+
+// InitializeDataSources discovers the data source IDs for both the main and customers databases.
+//
+// This method should be called during application startup before accepting requests.
+// It queries both database containers to discover their data source IDs, which are required
+// for all subsequent operations (page creation, queries, etc.) in API v2025-09-03.
+//
+// Returns an error if either data source discovery fails.
+func (c *Client) InitializeDataSources() error {
+	// Discover main database data source
+	mainDataSourceID, err := c.discoverDataSourceID(c.databaseID, "main database")
+	if err != nil {
+		return fmt.Errorf("failed to discover main database data source: %w", err)
+	}
+	c.dataSourceID = mainDataSourceID
+
+	// Discover customers database data source
+	customersDataSourceID, err := c.discoverDataSourceID(c.customersDBID, "customers database")
+	if err != nil {
+		return fmt.Errorf("failed to discover customers database data source: %w", err)
+	}
+	c.customersDataSourceID = customersDataSourceID
 
 	return nil
 }
@@ -250,6 +334,21 @@ type RelationPage struct {
 	ID string `json:"id"` // Notion page UUID
 }
 
+// DataSource represents a data source within a Notion database container.
+// Introduced in API v2025-09-03 to support multi-source databases.
+type DataSource struct {
+	ID   string `json:"id"`   // Data source UUID
+	Name string `json:"name"` // Display name of the data source
+}
+
+// DatabaseResponse represents the response from GET /v1/databases/:database_id.
+// With API v2025-09-03, this returns the database container with its child data sources.
+type DatabaseResponse struct {
+	Object      string       `json:"object"`       // "database"
+	ID          string       `json:"id"`           // Database container ID
+	DataSources []DataSource `json:"data_sources"` // List of child data sources
+}
+
 // CreatePageRequest represents a request to create a page in Notion.
 //
 // A page in Notion is created within a parent (database or page).
@@ -260,9 +359,10 @@ type CreatePageRequest struct {
 }
 
 // Parent identifies the parent container for a new Notion page.
-// For database entries, DatabaseID specifies which database to create the page in.
+// With API v2025-09-03, DataSourceID is used instead of DatabaseID.
 type Parent struct {
-	DatabaseID string `json:"database_id"`
+	Type         string `json:"type"`           // "data_source_id" for v2025-09-03
+	DataSourceID string `json:"data_source_id"` // Data source ID for the page
 }
 
 // multiSelectConfig defines validation rules for multi-select fields.
@@ -523,7 +623,12 @@ func (c *Client) buildProperties(fields map[string]string) (map[string]Property,
 
 		case constants.FieldThemeCategory, constants.AliasTheme, constants.AliasCategory:
 			// Validate theme selection against valid values
-			prop, err = buildSelectProperty(trimmedValue, constants.ValidThemeCategories, constants.FieldThemeCategory)
+			// Note: Notion expects multi_select, but Slack form only allows one selection
+			prop, err = buildMultiSelectProperty(trimmedValue, multiSelectConfig{
+				maxItems:    1,
+				validValues: constants.ValidThemeCategories,
+				fieldName:   constants.FieldThemeCategory,
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -623,7 +728,8 @@ func (c *Client) validateRequiredFields(properties map[string]Property) error {
 func (c *Client) createNotionPage(properties map[string]Property) error {
 	request := CreatePageRequest{
 		Parent: Parent{
-			DatabaseID: c.databaseID,
+			Type:         "data_source_id",
+			DataSourceID: c.dataSourceID,
 		},
 		Properties: properties,
 	}
@@ -748,14 +854,15 @@ func parseMultiSelect(value string) []Select {
 	return selections
 }
 
-// GetDatabaseSchema retrieves the schema of the Notion database.
+// GetDatabaseSchema retrieves the schema of the Notion database data source.
 //
-// Queries the database metadata to get property names and their types.
+// Queries the data source metadata to get property names and their types.
+// With API v2025-09-03, property information is stored on data sources, not database containers.
 // Useful for debugging and understanding the database structure.
 //
 // Returns a map of property names to property types (e.g., "title", "rich_text", "select").
 func (c *Client) GetDatabaseSchema() (map[string]string, error) {
-	endpoint := fmt.Sprintf("%s/databases/%s", constants.NotionAPIBaseURL, c.databaseID)
+	endpoint := fmt.Sprintf("%s/data_sources/%s", constants.NotionAPIBaseURL, c.dataSourceID)
 	resp, err := c.makeNotionRequest("GET", endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -808,7 +915,7 @@ func (c *Client) fetchCustomersPage(cursor string) (customers map[string]string,
 		return nil, "", false, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/databases/%s/query", constants.NotionAPIBaseURL, c.customersDBID)
+	endpoint := fmt.Sprintf("%s/data_sources/%s/query", constants.NotionAPIBaseURL, c.customersDataSourceID)
 	resp, err := c.makeNotionRequest("POST", endpoint, body)
 	if err != nil {
 		return nil, "", false, err

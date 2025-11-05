@@ -65,6 +65,12 @@ func (h *Handler) SetCacheManager(cm *cache.Manager) {
 
 // Initialize initializes the handler by fetching required data from Notion
 func (h *Handler) Initialize() error {
+	// Discover data source IDs for both main and customers databases
+	// Required for API v2025-09-03 which uses data source IDs instead of database IDs
+	if err := h.notionClient.InitializeDataSources(); err != nil {
+		return fmt.Errorf("failed to initialize data sources: %w", err)
+	}
+
 	// Fetch the list of valid customers from the Customers database
 	if err := h.notionClient.InitializeCustomers(); err != nil {
 		return fmt.Errorf("failed to initialize clients: %w", err)
@@ -135,7 +141,7 @@ func (h *Handler) HandleSlashCommand(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleOpenModalCommand handles the default /hopperbot command to open the modal
-func (h *Handler) handleOpenModalCommand(w http.ResponseWriter, r *http.Request, triggerID, command string) {
+func (h *Handler) handleOpenModalCommand(w http.ResponseWriter, _ *http.Request, triggerID, command string) {
 	// Validate trigger_id
 	if triggerID == "" {
 		h.logger.Error("trigger_id is empty")
@@ -196,7 +202,7 @@ func (h *Handler) handleOpenModalCommand(w http.ResponseWriter, r *http.Request,
 }
 
 // handleRefreshCacheCommand handles the /hopperbot refresh-cache command
-func (h *Handler) handleRefreshCacheCommand(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleRefreshCacheCommand(w http.ResponseWriter, _ *http.Request) {
 	h.logger.Info("refresh-cache command received")
 
 	if h.cacheManager == nil {

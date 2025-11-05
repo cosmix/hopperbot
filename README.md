@@ -120,8 +120,8 @@ This database should have the following properties:
 - **Theme/Category** (Select) - With options: "New feature idea", "Feature improvement", "Market/competition intelligence", "Customer pain point"
 - **Product Area** (Select) - With options: "AI/ML", "Integrations/SDKs", "Data Governance", "Systems", "UX", "Activation Kits", "Activation", "rETL", "Transformations", "EventStream", "WH Ingestion"
 - **Comments** (Text or Rich text)
-- **Customer Org** (Multi-select or Relation)
-- **Submitted By** (Person property) - Will be automatically populated
+- **Customer Organization** (Multi-select or Relation)
+- **Submitted by** (Person property) - Will be automatically populated
 
 **B. Customers Database** (list of customer organizations)
 
@@ -303,7 +303,7 @@ The modal provides the following fields:
    - Additional context or notes about your submission
    - Example: "Requested by multiple customers in Q4"
 
-2. **Customer Org** (Multi-select dropdown with search, max 10 selections)
+2. **Customer Organization** (Multi-select dropdown with search, max 10 selections)
    - Searchable list of customers from your Notion Customers database
    - Type to search and select up to 10 customer organizations
    - The list is automatically synced from Notion on bot startup
@@ -342,7 +342,7 @@ The modal validates your input in real-time:
 - **Theme/Category**: Required, must select exactly 1 option
 - **Product Area**: Required, must select exactly 1 option
 - **Comments**: Optional, free text
-- **Customer Org**: Optional, can select up to 10 organizations
+- **Customer Organization**: Optional, can select up to 10 organizations
 
 The bot will:
 
@@ -437,6 +437,7 @@ CMD ["./hopperbot"]
 Hopperbot includes production-grade observability features following modern monitoring, alerting, and debugging best practices. The implementation provides comprehensive visibility into application health, performance, and operational metrics.
 
 **Key Capabilities:**
+
 - Prometheus metrics for performance and business metrics
 - Health checks for liveness and readiness probes
 - Request-level instrumentation with middleware
@@ -448,22 +449,26 @@ Hopperbot includes production-grade observability features following modern moni
 A complete metrics package with 16 Prometheus metrics covering all aspects of the application:
 
 #### HTTP Metrics
+
 - `hopperbot_http_requests_total` - Counter for all HTTP requests (labels: endpoint, method, status)
 - `hopperbot_http_request_duration_seconds` - Histogram for request latency
 - `hopperbot_http_requests_in_flight` - Gauge for concurrent requests
 - `hopperbot_http_response_size_bytes` - Histogram for response sizes
 
 #### Slack Metrics
+
 - `hopperbot_slack_commands_total` - Counter for slash command invocations
 - `hopperbot_slack_interactions_total` - Counter for interactive events
 - `hopperbot_slack_modal_submissions_total` - Counter for modal submissions
 
 #### Notion API Metrics
+
 - `hopperbot_notion_api_requests_total` - Counter for API requests (by operation)
 - `hopperbot_notion_api_request_duration_seconds` - Histogram for API latency
 - `hopperbot_notion_api_errors_total` - Counter for API errors (with error types)
 
 #### Application Metrics
+
 - `hopperbot_validation_errors_total` - Counter for form validation errors
 - `hopperbot_client_cache_size` - Gauge for cached client count
 - `hopperbot_user_cache_size` - Gauge for cached user count
@@ -472,6 +477,7 @@ A complete metrics package with 16 Prometheus metrics covering all aspects of th
 ### Observability Endpoints
 
 **Endpoints:**
+
 - `/metrics` - Prometheus metrics endpoint
 - `/health` - Liveness probe (is the server running?)
 - `/ready` - Readiness probe (can we serve traffic?)
@@ -491,6 +497,7 @@ curl http://localhost:8080/version
 ```
 
 **Example Healthy Response:**
+
 ```json
 {
   "status": "healthy",
@@ -527,13 +534,13 @@ global:
 
 # Load alerting rules
 rule_files:
-  - 'prometheus-rules.yml'
+  - "prometheus-rules.yml"
 
 scrape_configs:
-  - job_name: 'hopperbot'
+  - job_name: "hopperbot"
     static_configs:
-      - targets: ['hopperbot:8080']
-    metrics_path: '/metrics'
+      - targets: ["hopperbot:8080"]
+    metrics_path: "/metrics"
 ```
 
 ### Kubernetes Health Probes
@@ -561,6 +568,7 @@ readinessProbe:
 ### Key Metrics to Monitor
 
 #### HTTP Performance
+
 ```promql
 # Request rate
 rate(hopperbot_http_requests_total[5m])
@@ -573,6 +581,7 @@ histogram_quantile(0.95, rate(hopperbot_http_request_duration_seconds_bucket[5m]
 ```
 
 #### Notion API Health
+
 ```promql
 # API request rate
 rate(hopperbot_notion_api_requests_total[5m])
@@ -585,6 +594,7 @@ histogram_quantile(0.95, rate(hopperbot_notion_api_request_duration_seconds_buck
 ```
 
 #### Application Health
+
 ```promql
 # Client cache size (should be > 0)
 hopperbot_client_cache_size
@@ -654,11 +664,13 @@ groups:
 ### Grafana Dashboard Panels
 
 **Request Rate:**
+
 ```promql
 sum(rate(hopperbot_http_requests_total[5m])) by (endpoint)
 ```
 
 **Error Rate:**
+
 ```promql
 sum(rate(hopperbot_http_requests_total{status=~"5.."}[5m])) by (endpoint)
 /
@@ -666,6 +678,7 @@ sum(rate(hopperbot_http_requests_total[5m])) by (endpoint)
 ```
 
 **Latency Percentiles (p50, p95, p99):**
+
 ```promql
 histogram_quantile(0.50, sum(rate(hopperbot_http_request_duration_seconds_bucket[5m])) by (le, endpoint))
 histogram_quantile(0.95, sum(rate(hopperbot_http_request_duration_seconds_bucket[5m])) by (le, endpoint))
@@ -673,6 +686,7 @@ histogram_quantile(0.99, sum(rate(hopperbot_http_request_duration_seconds_bucket
 ```
 
 **Cache Health:**
+
 ```promql
 hopperbot_client_cache_size
 hopperbot_user_cache_size
@@ -769,7 +783,7 @@ golangci-lint run
     - Title field (any name)
     - Theme/Category (Select)
     - Product Area (Select)
-    - Submitted By (Person)
+    - Submitted by (Person)
 - ❌ Property names don't match (case-sensitive)
   - ✅ Check that property names in Notion exactly match what the bot expects
 - ❌ Network connectivity issues to Notion API
@@ -777,7 +791,7 @@ golangci-lint run
 
 #### 6. Empty Customer List in Modal
 
-**Symptoms**: The "Customer Org" dropdown is empty or missing customers
+**Symptoms**: The "Customer Organization" dropdown is empty or missing customers
 
 **Causes & Solutions**:
 

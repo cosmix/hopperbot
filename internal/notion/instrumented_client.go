@@ -32,11 +32,12 @@ func (c *Client) recordNotionRequest(operation string, startTime time.Time, err 
 	if err != nil {
 		status = "error"
 		errorType := "unknown"
-		if err == context.DeadlineExceeded {
+		switch err {
+		case context.DeadlineExceeded:
 			errorType = "timeout"
-		} else if err == context.Canceled {
+		case context.Canceled:
 			errorType = "canceled"
-		} else {
+		default:
 			errorType = "api_error"
 		}
 		c.metrics.NotionAPIErrors.WithLabelValues(operation, errorType).Inc()

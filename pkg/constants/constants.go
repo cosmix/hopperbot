@@ -20,8 +20,8 @@ const (
 	FieldThemeCategory = "Theme/Category"
 	FieldProductArea   = "Product Area"
 	FieldComments      = "Comments"
-	FieldCustomerOrg   = "Customer Org"
-	FieldSubmittedBy   = "Submitted By"
+	FieldCustomerOrg   = "Customer Organization"
+	FieldSubmittedBy   = "Submitted by"
 )
 
 // Field aliases for title field.
@@ -161,7 +161,7 @@ const (
 
 	// NotionAPIVersion specifies which version of the Notion API to use.
 	// Using a fixed version ensures consistent behavior.
-	NotionAPIVersion = "2022-06-28"
+	NotionAPIVersion = "2025-09-03"
 
 	// NotionAPIBaseURL is the base URL for all Notion API requests.
 	NotionAPIBaseURL = "https://api.notion.com/v1"

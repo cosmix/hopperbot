@@ -485,7 +485,7 @@ func TestValidateRequiredFields(t *testing.T) {
 			name: "all required fields present",
 			props: map[string]Property{
 				constants.FieldIdeaTopic:     {Title: []RichText{{Text: Text{Content: "Test"}}}},
-				constants.FieldThemeCategory: {Select: &Select{Name: "New Feature Idea"}},
+				constants.FieldThemeCategory: {MultiSelect: []Select{{Name: "New Feature Idea"}}},
 				constants.FieldProductArea:   {Select: &Select{Name: "AI/ML"}},
 				constants.FieldSubmittedBy:   {People: []NotionUser{{Object: "user", ID: "test-user-id"}}},
 			},
@@ -494,7 +494,7 @@ func TestValidateRequiredFields(t *testing.T) {
 		{
 			name: "missing title",
 			props: map[string]Property{
-				constants.FieldThemeCategory: {Select: &Select{Name: "New Feature Idea"}},
+				constants.FieldThemeCategory: {MultiSelect: []Select{{Name: "New Feature Idea"}}},
 				constants.FieldProductArea:   {Select: &Select{Name: "AI/ML"}},
 			},
 			wantError: true,
@@ -511,7 +511,7 @@ func TestValidateRequiredFields(t *testing.T) {
 			name: "missing product area",
 			props: map[string]Property{
 				constants.FieldIdeaTopic:     {Title: []RichText{{Text: Text{Content: "Test"}}}},
-				constants.FieldThemeCategory: {Select: &Select{Name: "New Feature Idea"}},
+				constants.FieldThemeCategory: {MultiSelect: []Select{{Name: "New Feature Idea"}}},
 			},
 			wantError: true,
 		},
@@ -519,7 +519,7 @@ func TestValidateRequiredFields(t *testing.T) {
 			name: "missing submitted by",
 			props: map[string]Property{
 				constants.FieldIdeaTopic:     {Title: []RichText{{Text: Text{Content: "Test"}}}},
-				constants.FieldThemeCategory: {Select: &Select{Name: "New Feature Idea"}},
+				constants.FieldThemeCategory: {MultiSelect: []Select{{Name: "New Feature Idea"}}},
 				constants.FieldProductArea:   {Select: &Select{Name: "AI/ML"}},
 			},
 			wantError: true,
@@ -704,20 +704,24 @@ func TestNewClient(t *testing.T) {
 
 // TestCreatePageRequest tests CreatePageRequest structure
 func TestCreatePageRequest(t *testing.T) {
-	parentID := "db-id"
+	dataSourceID := "ds-id"
 	props := map[string]Property{
 		"Title": {Title: []RichText{{Text: Text{Content: "Test"}}}},
 	}
 
 	request := CreatePageRequest{
 		Parent: Parent{
-			DatabaseID: parentID,
+			Type:         "data_source_id",
+			DataSourceID: dataSourceID,
 		},
 		Properties: props,
 	}
 
-	if request.Parent.DatabaseID != parentID {
-		t.Errorf("parent database ID = %s, want %s", request.Parent.DatabaseID, parentID)
+	if request.Parent.Type != "data_source_id" {
+		t.Errorf("parent type = %s, want data_source_id", request.Parent.Type)
+	}
+	if request.Parent.DataSourceID != dataSourceID {
+		t.Errorf("parent data source ID = %s, want %s", request.Parent.DataSourceID, dataSourceID)
 	}
 	if len(request.Properties) != 1 {
 		t.Errorf("number of properties = %d, want 1", len(request.Properties))
@@ -759,47 +763,6 @@ func TestProperty(t *testing.T) {
 	}
 	if len(multiSelectProp.MultiSelect) != 2 {
 		t.Errorf("multiselect length = %d, want 2", len(multiSelectProp.MultiSelect))
-	}
-}
-
-// TestSubmitForm tests form submission validation
-func TestSubmitForm(t *testing.T) {
-	logger, _ := zap.NewDevelopment()
-	client := NewClient("test-key", "db-id", "clients-db-id", logger)
-	client.customerMap = map[string]string{"Customer A": "page-id-1"}
-
-	tests := []struct {
-		name      string
-		fields    map[string]string
-		wantError bool
-	}{
-		{
-			name: "valid form",
-			fields: map[string]string{
-				constants.AliasTitle:       "Test Idea",
-				constants.AliasTheme:       "New Feature Idea",
-				constants.AliasProductArea: "AI/ML",
-			},
-			wantError: true, // Will error due to HTTP request, but validation passes
-		},
-		{
-			name: "missing required field",
-			fields: map[string]string{
-				constants.AliasTitle: "Test Idea",
-				// Missing theme and product area
-			},
-			wantError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := client.SubmitForm(tt.fields)
-			if (err != nil) != tt.wantError {
-				// Note: We expect errors here because we're not mocking HTTP
-				// In real tests with mocking, this would be different
-			}
-		})
 	}
 }
 

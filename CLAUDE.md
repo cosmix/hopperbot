@@ -4,6 +4,26 @@
 
 Go-based Slack bot providing an interactive modal interface for submitting structured data to Notion. Users invoke `/hopperbot` to open a searchable form that validates and submits to a Notion database.
 
+## Notion API Version
+
+**Current Version**: `2025-09-03`
+
+The bot uses Notion API v2025-09-03, which introduces **multi-source database support**. Key changes:
+
+- **Data Sources**: Databases are now containers with one or more data sources
+- **Discovery**: Bot discovers data source IDs on startup via `InitializeDataSources()`
+- **Operations**: All operations (queries, page creation) use data source IDs instead of database IDs
+- **Multi-source Handling**: When multiple data sources exist, the bot uses the first one and logs a warning
+
+### Migration Notes
+
+Upgraded from v2022-06-28 to v2025-09-03 (2025-11-05):
+
+- Parent type in page creation changed from `database_id` to `data_source_id`
+- Query endpoints changed from `/v1/databases/:id/query` to `/v1/data_sources/:id/query`
+- Added automatic data source discovery during initialization
+- Updated `internal/notion/client.go`, `internal/slack/handler.go`, `pkg/constants/constants.go`, and tests
+
 ## Database Schema
 
 The bot handles exactly 6 fields:
@@ -11,14 +31,14 @@ The bot handles exactly 6 fields:
 **Required:**
 
 1. Idea/Topic (title) - aliases: title, idea, topic
-2. Theme/Category (select) - valid values: "new feature idea", "feature improvement", "market/competition intelligence", "customer pain point"
+2. Theme/Category (multi-select, max 1) - Notion expects multi_select, Slack form allows single selection only. Valid values: "new feature idea", "feature improvement", "market/competition intelligence", "customer pain point"
 3. Product Area (select) - valid values: AI/ML, Integrations/SDKs, Data Governance, Systems, UX, Activation Kits, Activation, rETL, Transformations, EventStream, WH Ingestion
-4. Submitted By (people) - Automatically populated with the Notion user mapped from the Slack user's email
+4. Submitted by (people) - Automatically populated with the Notion user mapped from the Slack user's email
 
 **Optional:**
 
 1. Comments (text) - aliases: comments, comment
-2. Customer Org (multi-select, max 10) - aliases: customer_org, customer, org
+2. Customer Organization (multi-select, max 10) - aliases: customer_org, customer, org
 
 The bot validates all field values against the allowed lists and enforces max selection constraints.
 
@@ -40,7 +60,7 @@ The bot validates all field values against the allowed lists and enforces max se
 - Slack modal interface with signature verification and real-time validation
 - **Rotating modal titles**: Each modal invocation displays a randomly selected witty title relevant to the submission type (feature ideas, improvements, customer intelligence)
 - Notion API integration with support for Title, Rich Text, Select, Multi-select, and People properties
-- Field validation: length limits (2000 chars), allowed values, max selections (10 for Customer Org)
+- Field validation: length limits (2000 chars), allowed values, max selections (10 for Customer Organization)
 - Slack-to-Notion user mapping via email (requires `users:read.email` OAuth scope)
 - External select menus for unlimited customers with in-memory search
 
@@ -105,7 +125,7 @@ Uses Slack's **external select menu** pattern for unlimited customers with dynam
 
 ## Slack-to-Notion User Mapping
 
-Automatically populates "Submitted By" field by mapping Slack users to Notion users via email.
+Automatically populates "Submitted by" field by mapping Slack users to Notion users via email.
 
 **Flow**:
 Startup: Notion Users API → Cache (`email → UUID`) → Submission: Slack `users.info` → Email lookup → Notion People property
